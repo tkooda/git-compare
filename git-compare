@@ -21,8 +21,7 @@ import re
 
 
 ## TODO:
-##  - handle symlinks?
-##  - handle perms?
+##  - examine handle perms
 
 
 def debug( level, *objs ):
@@ -157,7 +156,7 @@ for root, dirs, files in os.walk( args[ "local_directory" ] ): ## TODO: support 
     for f in files:
         local_path = os.path.join( base, f )
         if not is_desired( local_path ):
-            debug( 5, "EXCLUDE2:", local_path )
+            debug( 5, "EXCLUDED_FILE:", local_path )
             continue
         
         debug( 9, "FILE local_path:", local_path )
@@ -171,7 +170,7 @@ for root, dirs, files in os.walk( args[ "local_directory" ] ): ## TODO: support 
     for d in dirs:
         local_path = os.path.join( base, d )
         if not is_desired( local_path ):
-            debug( 5, "EXCLUDE3:", local_path )
+            debug( 5, "EXCLUDED_DIR:", local_path )
             continue
         
         debug( 9, "DIR local_path:", local_path )
