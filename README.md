@@ -15,7 +15,7 @@ Quickly compare a remote GIT repository with a local directory and identify diff
 
 * Example usage:
 
-    git-compare  ssh://myuser@example.com/path/to/repo.git  /local/path/to/repo/deployment/
+    `git-compare  ssh://myuser@example.com/path/to/repo.git  /local/path/to/repo/deployment/`
 
 * Quickly identifies any extra / missing files or symlinks, and any files that don't 100% match (sha1 checksum) what's in the remote GIT repostory.
 
