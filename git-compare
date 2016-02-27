@@ -1,0 +1,182 @@
+#!/usr/bin/python
+
+## 2016-02-26 : tkooda : 
+
+## compare a local directory against a remote git repository (using a local git repo cache dir for speed), IGNORING all .gitignores and .git/info/exclude!
+
+## requires AaronO's SSHGitClient patch from:  https://github.com/FriendCode/gittle/issues/18
+##   pip uninstall dulwich
+##   pip install 'https://github.com/AaronO/dulwich/tarball/eebb032b2b7b982d21d636ac50b6e45de58b208b#egg=dulwich-0.9.1-2'
+##   curl -o /usr/local/lib/python2.7/dist-packages/dulwich/refs.py https://raw.githubusercontent.com/jelmer/dulwich/dulwich-0.9.7/dulwich/refs.py
+
+
+import os
+import sys
+import hashlib
+from dulwich.repo import Repo
+from dulwich.client import SSHGitClient, HttpGitClient
+from urlparse import urlparse
+import argparse
+import re
+
+
+## TODO:
+##  - handle symlinks?
+##  - handle perms?
+
+
+def debug( level, *objs ):
+    try:
+        if level <= int( os.getenv( "DEBUG" ) ):
+            print >>sys.stderr, "DEBUG(%d):" % level, objs
+            sys.stderr.flush()
+    except:
+        pass
+
+
+def git_sha1_of_file( path_file ):
+    sha = hashlib.sha1()
+    sha.update( "blob " + str( os.path.getsize( path_file ) ) + "\0" )
+    with open( path_file, "rb" ) as f:
+        while True:
+            block = f.read( 2**10 ) # read in 1 MB chunks
+            if not block:
+                break
+            sha.update( block )
+        return sha.hexdigest()
+
+
+def is_desired( item_path ):
+    if item_path.startswith( ".git/" ):
+        return False
+    
+    if not args[ "exclude" ]:
+        return True
+    
+    for exclude in args[ "exclude" ]:
+        if item_path.startswith( exclude ):
+            return False
+    
+    return True
+
+
+## parse args ..
+parser = argparse.ArgumentParser( description = "Compare local directory to a remote GIT repository." )
+parser.add_argument( "--key", "-k", type=str, action='store', help="optional SSH private key (otherwise use SSH Agent)" )
+parser.add_argument( '--head', type=str, action='store', help="specify HEAD of remote GIT repository to use (e.g. 'refs/heads/master' )" )
+parser.add_argument( '--exclude', "-x", action='append', help='exclude files / directories that start with these')
+#parser.add_argument( '--include', "-i", action='append', help='include ONLY files / directories that start with these (imples --exclude "**" )')
+parser.add_argument( 'repo_url', action='store', help="SSH URL for remote GIT repository.\n  e.g.: ssh://username@hostname/path/to/repo.git" )
+parser.add_argument( 'local_directory', action='store', help="Path to local directory to compare against the remote GIT repository")
+args = vars( parser.parse_args() )
+debug( 0, "ARGS:", args )
+
+if not os.path.isdir( args[ "local_directory" ] ):
+    print "ERROR: local directory does not exist: %s" % args[ "local_directory" ]
+    sys.exit( 1 )
+
+url = urlparse( args[ "repo_url" ] )
+
+
+## setup local cache (repo) ..
+cache_parent = os.path.expanduser( "~/.cache/git-compare" )
+if not os.path.isdir( cache_parent ):
+    os.makedirs( cache_parent )
+cache_dir = os.path.join( cache_parent, "%s_%s%s" % ( url.hostname, url.username, url.path.replace( "/", "_" ) ) )
+
+if os.path.isdir( cache_dir ):
+    local_repo = Repo( cache_dir )
+else:
+    local_repo = Repo.init( cache_dir, mkdir = True )
+
+
+## connect to remote GIT repo ..
+if url.scheme == "ssh":
+    client = SSHGitClient( host = url.hostname,
+                            username = url.username,
+                            key_filename = args[ "key" ],
+#                            pkey = open( "id_rsa_foo", "ro" ),
+                            allow_agent=True,
+                            look_for_keys=True,
+                        )
+elif url.scheme == "http":
+    client = HttpGitClient( args[ "repo_url" ] ) # TODO: untested!
+else:
+    raise ValueError( "unknown protocol in URL: %s" % url.scheme )
+
+
+## fetch (refresh) local repo from remote ..
+remote_refs = client.fetch( url.path, local_repo )
+debug( 5, "remote_refs:", remote_refs )
+
+
+## allow overriding the branch ..
+if args[ "head" ]:
+    local_repo["HEAD"] = args[ "head" ]
+else:
+    local_repo["HEAD"] = remote_refs["HEAD"] # use HEAD by default, could use "refs/heads/master" or other
+debug( 7, "tree:", local_repo["HEAD"].tree ) # unsure
+
+
+# get tree corresponding to the head commit
+tree_id = local_repo["HEAD"].tree
+
+# iterate over tree content, giving path and blob sha.
+err = 0
+file_list = []
+for entry in local_repo.object_store.iter_tree_contents( tree_id ):
+    if not is_desired( entry.path ):
+        debug( 5, "EXCLUDE:", entry.path )
+        continue
+    
+    file_list.append( entry.path )
+    path_file = os.path.join( args[ "local_directory" ], entry.path )
+    debug( 9, "path_file:", path_file )
+    
+    if not os.path.exists( path_file ):
+        print "MISSING:", entry.path
+        err += 1
+        continue
+    
+    try:
+        git_sha = git_sha1_of_file( path_file )
+        if entry.sha != git_sha:
+            print "DIFFERENT:", entry.path
+            err += 1
+    except IOError, e:
+        err += 1
+        print "IO_ERROR:", entry.path
+
+
+for root, dirs, files in os.walk( args[ "local_directory" ] ): ## TODO: support ignore regexes
+    debug( 9, "local_directory:", args[ "local_directory" ] )
+    debug( 9, "root:", root )
+    base = root.replace( args[ "local_directory" ], "", 1 ).lstrip( "/" )
+    debug( 9, "base:", base )
+    
+    for f in files:
+        local_path = os.path.join( base, f )
+        if not is_desired( local_path ):
+            debug( 5, "EXCLUDE2:", local_path )
+            continue
+        
+        debug( 9, "FILE local_path:", local_path )
+        if local_path not in file_list:
+            if os.path.islink( os.path.join( args[ "local_directory" ], local_path ) ):
+                print "EXTRA_SYMLINK_FILE:", local_path
+            else:
+                print "EXTRA_FILE:", local_path
+            err += 1
+    
+    for d in dirs:
+        local_path = os.path.join( base, d )
+        if not is_desired( local_path ):
+            debug( 5, "EXCLUDE3:", local_path )
+            continue
+        
+        debug( 9, "DIR local_path:", local_path )
+        if os.path.islink( os.path.join( args[ "local_directory" ], local_path ) ):
+            print "EXTRA_SYMLINK_DIR:", local_path
+            err += 1
+
+sys.exit( err )
