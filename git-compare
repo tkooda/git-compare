@@ -1,10 +1,10 @@
-#!/usr/bin/python
+#!/usr/bin/python -W ignore::DeprecationWarning
 
-## 2016-02-26 : tkooda : 
+## 2016-02-26 : tkooda : git-compare
 
-## compare a local directory against a remote git repository (using a local git repo cache dir for speed), IGNORING .gitignores and .git/info/exclude!
+## compare a local directory against a remote git repository (using a local git repo cache dir for speed), IGNORING all .gitignores and .git/info/exclude (use args to specify exclusions)
 
-## requires AaronO's SSHGitClient patch from:  https://github.com/FriendCode/gittle/issues/18
+## requires AaronO's SSHGitClient patch for SSH support, from:  https://github.com/FriendCode/gittle/issues/18
 ##   pip uninstall dulwich
 ##   pip install 'https://github.com/AaronO/dulwich/tarball/eebb032b2b7b982d21d636ac50b6e45de58b208b#egg=dulwich-0.9.1-2'
 ##   curl -o /usr/local/lib/python2.7/dist-packages/dulwich/refs.py https://raw.githubusercontent.com/jelmer/dulwich/dulwich-0.9.7/dulwich/refs.py
@@ -46,34 +46,101 @@ def git_sha1_of_file( path_file ):
         return sha.hexdigest()
 
 
-def is_desired( item_path ):
-    if item_path.startswith( ".git/" ):
-        return False
-    
-    if not args[ "exclude" ]:
+def is_excluded( item_path, patterns = None ):
+    if item_path == ".git" or item_path.startswith( ".git/" ):
         return True
     
-    for exclude in args[ "exclude" ]:
-        if item_path.startswith( exclude ):
-            return False
+    for pattern in patterns or PATTERNS_EXCLUDE_ANY:
+        if pattern.match( item_path ): # anchored at start of string
+            return True
     
-    return True
+    return False
+
+
+def is_excluded_file( item_path ):
+    return is_excluded( item_path, PATTERNS_EXCLUDE_FILE )
+
+
+def is_excluded_dir( item_path ):
+    return is_excluded( item_path, PATTERNS_EXCLUDE_DIR )
+
+
+def is_excluded_link( item_path, target ):
+    if item_path == ".git" or item_path.startswith( ".git/" ):
+        return True
+    
+    for src, dst in PATTERNS_EXCLUDE_LINK:
+        try:
+            if src.match( item_path ) and dst.match( target ): # anchored at start of string
+                return True
+        except:
+            pass
+    
+    return False
+
+
+def is_absent_file( item_path ):
+    return is_excluded( item_path, PATTERNS_ABSENT_FILE )
+
+
+def is_absent_link( item_path, target ):
+    return is_excluded( item_path, PATTERNS_ABSENT_LINK )
+
 
 
 ## parse args ..
 parser = argparse.ArgumentParser( description = "Compare local directory to a remote GIT repository." )
-parser.add_argument( "--key", "-k", type=str, action='store', help="optional SSH private key (otherwise use SSH Agent)" )
-parser.add_argument( '--branch', "-b", type=str, action='store', help="specify branch on remote GIT repository to use (e.g. 'master' )" )
-parser.add_argument( '--exclude', "-x", action='append', help='exclude files / directories that start with these')
-#parser.add_argument( '--include', "-i", action='append', help='include ONLY files / directories that start with these (imples --exclude "**" )')
+parser.add_argument( "--key", "-k", type=str, action='store', help="Optional SSH private key (otherwise use SSH Agent)." )
+parser.add_argument( '--branch', "-b", type=str, action='store', help="Specify branch on remote GIT repository to use (e.g. 'master')." )
+parser.add_argument( '--exclude', "-x", action='append', help="Exclude any files / directories / symlinks that match this regex (e.g. 'subdir/', '.*\.txt$')." )
+parser.add_argument( '--exclude-dir', "-xd",  action='append', help="Exclude directories that match this regex (e.g. 'subdir/', '/home/[^/]+/$')." )
+parser.add_argument( '--exclude-file', "-xf", action='append', help="Exclude files that match this regex (e.g. '/path/to/file.py', '.*\.py\.bak$')." )
+parser.add_argument( '--exclude-link', "-xl", action='append', help="Exclude symlinks that match these regexes (e.g. 'subdir/mylink=\.\./path/to/linktarget')." )
+#parser.add_argument( '--absent', "-a", action='append', help="Any files / directories / symlinks that match this regex (e.g. 'subdir/', '.*\.txt$') should be absent." )
+#parser.add_argument( '--absent-dir', "-ad",  action='append', help="Directories that match this regex (e.g. 'subdir/', '/home/[^/]+/$') should be absent." )
+parser.add_argument( '--absent-file', "-af", action='append', help="Files that match this regex (e.g. '/path/to/file.py', '.*\.py\.bak$') should be absent." )
+parser.add_argument( '--absent-link', "-al", action='append', help="Symlinks that match these regexes (e.g. 'subdir/mylink') should be absent." )
 parser.add_argument( 'repo_url', action='store', help="SSH URL for remote GIT repository.\n  e.g.: ssh://username@hostname/path/to/repo.git" )
-parser.add_argument( 'local_directory', action='store', help="Path to local directory to compare against the remote GIT repository")
+parser.add_argument( 'local_directory', action='store', help="Path to local directory to compare against the remote GIT repository.")
 args = vars( parser.parse_args() )
-debug( 0, "ARGS:", args )
+debug( 5, "ARGS:", args )
 
 if not os.path.isdir( args[ "local_directory" ] ):
     print "ERROR: local directory does not exist: %s" % args[ "local_directory" ]
     sys.exit( 1 )
+
+
+## compile all patterns..
+PATTERNS_EXCLUDE_ANY = []
+for exclude in args[ "exclude" ] or []:
+    PATTERNS_EXCLUDE_ANY.append( re.compile( exclude ) )
+
+PATTERNS_EXCLUDE_DIR = []
+for exclude in args[ "exclude_dir" ] or []:
+    PATTERNS_EXCLUDE_DIR.append( re.compile( exclude ) )
+
+PATTERNS_EXCLUDE_FILE = []
+for exclude in args[ "exclude_file" ] or []:
+    PATTERNS_EXCLUDE_FILE.append( re.compile( exclude ) )
+
+PATTERNS_EXCLUDE_LINK = []
+for exclude in args[ "exclude_link" ] or []:
+    try:
+        src, dst = exclude.split( "=" )
+    except:
+        print >>sys.stderr, "ERROR: invalid --exclude-link/-xl argument, missing '=':", exclude
+        sys.exit(2)
+    PATTERNS_EXCLUDE_LINK.append( ( re.compile( src ), re.compile( dst ) ) )
+
+
+PATTERNS_ABSENT_FILE = []
+for absent in args[ "absent_file" ] or []:
+    PATTERNS_ABSENT_FILE.append( re.compile( absent ) )
+
+PATTERNS_ABSENT_LINK = []
+for absent in args[ "absent_link" ] or []:
+    PATTERNS_ABSENT_LINK.append( re.compile( absent ) )
+
 
 url = urlparse( args[ "repo_url" ] )
 
@@ -108,7 +175,7 @@ else:
 
 ## fetch (refresh) local repo from remote ..
 remote_refs = client.fetch( url.path, local_repo )
-debug( 5, "remote_refs:", remote_refs )
+debug( 9, "remote_refs:", remote_refs )
 
 
 ## allow overriding the branch ..
@@ -116,61 +183,86 @@ if args[ "branch" ]:
     local_repo["HEAD"] = remote_refs[ "refs/heads/" + args[ "branch" ] ]
 else:
     local_repo["HEAD"] = remote_refs["HEAD"] # use HEAD by default, could use "refs/heads/master" or other
-debug( 7, "tree:", local_repo["HEAD"].tree ) # unsure
+debug( 9, "tree:", local_repo["HEAD"].tree ) # unsure
 
 
 # get tree corresponding to the head commit
 tree_id = local_repo["HEAD"].tree
 
-# iterate over tree content, giving path and blob sha.
+# iterate over git repo tree content, giving path and blob sha.  (looking for items missing from filesystem, items on filesystem with wrong type or sha1 hash)
 err = 0
 file_list = {}
-for entry in local_repo.object_store.iter_tree_contents( tree_id ):
-    if not is_desired( entry.path ):
-        debug( 5, "EXCLUDE:", entry.path )
+for entry in local_repo.object_store.iter_tree_contents( tree_id ): # only returns files and symlinks, no dirs in git repo
+    file_list[ entry.path ] = { "mode": entry.mode, "sha": entry.sha }
+    
+    if is_excluded( entry.path ):
+        debug( 6, "EXCLUDE_ANY:", entry.path )
         continue
     
-    file_list[ entry.path ] = entry.mode
+    debug( 10, "ENTRY:", entry.mode, entry.path )
     full_item_path = os.path.join( args[ "local_directory" ], entry.path )
     debug( 9, "full_item_path:", full_item_path )
     
-    if entry.mode & MASK_SYMLINK:
+    if entry.mode & MASK_SYMLINK: # git entry is symlink, fs should have symlink
         if os.path.islink( full_item_path ):
-            if os.readlink( full_item_path ) != local_repo.object_store[ entry.sha ].data:
-                print "NON-MATCHING_SYMLINK_DESTINATION:", entry.path
+            if not is_excluded_link( entry.path, os.readlink( full_item_path ) ):
+                if os.readlink( full_item_path ) != local_repo.object_store[ entry.sha ].data:
+                    print "NON-MATCHING_SYMLINK_DESTINATION:", entry.path, "->", os.readlink( full_item_path )
+                    err += 1
             continue # symlink desired + exists
         else:
             if os.path.exists( full_item_path ):
                 print "FILE_SHOULD_BE_A_SYMLINK:", entry.path
+                err += 1
+                continue
             else:
-                print "MISSING_SYMLINK:", entry.path
-            err += 1
-            continue
-    else:
-        if os.path.islink( full_item_path ):
-            print "SYMLINK_SHOULD_BE_A_FILE:", entry.path
-            err += 1
-            continue
+                if is_absent_link( entry.path ):
+                    debug( 0, "OK: is_absent_file():", entry.path )
+                    continue
+                else:
+                    print "MISSING_SYMLINK:", entry.path
+                    err += 1
+                    continue
     
-    if not os.path.exists( full_item_path ):
-        if entry.mode & MASK_SYMLINK:
-            print "MISSING_SYMLINK:", entry.path
-        else:
-            print "MISSING_FILE:", entry.path
+    if os.path.islink( full_item_path ):
+        print "SYMLINK_SHOULD_BE_A_FILE:", entry.path
         err += 1
         continue
+    elif os.path.isdir( full_item_path ):
+        print "DIR_SHOULD_BE_A_FILE:", entry.path
+        err += 1
+        continue
+    else:
+        if not os.path.exists( full_item_path ):
+            if entry.mode & MASK_SYMLINK:
+                if is_absent_link( entry.path ):
+                    debug( 0, "OK: is_absent_link():", entry.path )
+                    continue
+                else:
+                    print "MISSING_SYMLINK:", entry.path
+                    err += 1
+                    continue
+            else:
+                if is_absent_file( entry.path ):
+                    debug( 0, "OK: is_absent_file():", entry.path )
+                    continue
+                else:
+                    print "MISSING_FILE:", entry.path
+                    err += 1
+                    continue
     
     try:
         git_sha = git_sha1_of_file( full_item_path )
         if entry.sha != git_sha:
-            print "DIFFERS:", entry.path
+            print "FILE_DIFFERS:", entry.path
             err += 1
     except IOError, e:
         err += 1
         print "IO_ERROR:", entry.path, e
 
 
-for root, dirs, files in os.walk( args[ "local_directory" ] ): ## TODO: support ignore regexes
+## walk down filesystem..
+for root, dirs, files in os.walk( args[ "local_directory" ] ):
     debug( 9, "local_directory:", args[ "local_directory" ] )
     debug( 9, "root:", root )
     base = root.replace( args[ "local_directory" ], "", 1 ).lstrip( "/" )
@@ -179,44 +271,86 @@ for root, dirs, files in os.walk( args[ "local_directory" ] ): ## TODO: support 
     for f in files:
         local_item_path = os.path.join( base, f )
         full_item_path = os.path.join( args[ "local_directory" ], local_item_path )
-        if not is_desired( local_item_path ):
-            debug( 5, "EXCLUDE2:", local_item_path )
+        if is_excluded( local_item_path ):
+            debug( 6, "EXCLUDE: is_excluded(): file:", local_item_path )
             continue
         
         debug( 9, "FILE local_item_path:", local_item_path )
         if local_item_path not in file_list.keys():
             if os.path.islink( full_item_path ):
-                if os.path.exists( full_item_path ):
-                    print "EXTRA_SYMLINK_TO_A_FILE:", local_item_path
+                if is_excluded_link( local_item_path, os.readlink( full_item_path ) ):
+                    debug( 6, "EXCLUDE: is_excluded_link():", local_item_path, os.readlink( full_item_path ) )
+                    continue
+                elif os.path.exists( full_item_path ):
+                    print "EXTRA_SYMLINK_TO_A_FILE:", local_item_path, "->", os.readlink( full_item_path )
                 else:
-                    print "EXTRA_SYMLINK:", local_item_path
+                    print "EXTRA_SYMLINK:", local_item_path, "->", os.readlink( full_item_path )
             else:
-                print "EXTRA_FILE:", local_item_path
+                if is_excluded_file( local_item_path ):
+                    debug( 6, "EXCLUDE: is_excluded_file():", local_item_path )
+                    continue
+                else:
+                    print "EXTRA_FILE:", local_item_path
             err += 1
             continue
     
     for d in dirs:
         local_item_path = os.path.join( base, d )
         full_item_path = os.path.join( args[ "local_directory" ], local_item_path )
-        if not is_desired( local_item_path ):
-            debug( 5, "EXCLUDE3:", local_item_path )
+        
+        if is_excluded( local_item_path ):
+            debug( 6, "EXCLUDE: DIR: is_excluded():", local_item_path )
             continue
         
-        if local_item_path not in file_list.keys():
-            debug( 9, "DIR local_item_path:", local_item_path )
-            if os.path.islink( full_item_path ):
-                print "EXTRA_SYMLINK_TO_A_DIR:", local_item_path
+        if os.path.islink( full_item_path ):
+            if is_excluded_link( local_item_path, os.readlink( full_item_path ) ):
+                debug( 6, "EXCLUDE: DIR: is_excluded_link():", local_item_path, os.readlink( full_item_path ) )
+                continue
+            
+            if local_item_path in file_list.keys():
+                if file_list[ local_item_path ][ "mode" ] & MASK_SYMLINK:
+                    if os.readlink( full_item_path ) != local_repo.object_store[ file_list[ local_item_path ][ "sha" ] ].data:
+                        print "SYMLINK_HAS_WRONG_TARGET:", local_item_path, "->", os.readlink( full_item_path )
+                        err += 1
+                        continue
+                    else:
+                        debug( 5, "OK: SYMLINK_IS_IN_GIT_AND_HAS_CORRECT_TARGET:", local_item_path, os.readlink( full_item_path ) )
+                        continue
+                else:
+                    print "SYMLINK_SHOULD_BE_DIR:", local_item_path, "->", os.readlink( full_item_path )
+                    err += 1
+                    continue
+            else:
+                print "EXTRA_SYMLINK_TO_A_DIR:", local_item_path, "->", os.readlink( full_item_path )
                 err += 1
                 continue
-#            else:
-#                print "FIXME EXTRA NON-LINK DIR1:", local_item_path # check if dest is symlink??
-        else:
-            if file_list[ local_item_path ] & MASK_SYMLINK:
-                if not os.path.islink( full_item_path ):
-                    print "DIR_SHOULD_BE_SYMLINK:", local_item_path
+        
+        else: # dir is != symlink (to a dir??)
+            if is_excluded_dir( local_item_path ):
+                debug( 6, "EXCLUDE: DIR: is_excluded_dir():", local_item_path )
+                continue
+            
+            if local_item_path in file_list.keys() and file_list[ local_item_path ][ "mode" ] & MASK_SYMLINK:
+                print "DIR_SHOULD_BE_SYMLINK:", local_item_path
+                err += 1
+                continue
+            
+            ## dir not a symlink and isn't excluded: check if it's got git files in it, otherwise warn about it's existance..
+            dir_has_git_children = False
+            for git_file_local_path in file_list.keys():
+                if git_file_local_path.startswith( local_item_path + "/" ):
+                    dir_has_git_children = True
+                    break # break out of this immediate for-loop, we found git child for this dir (git doesn't store dirs on their own)
+            
+            if dir_has_git_children:
+                debug( 5, "OK: DIR_HAS_GIT_CHILDREN:", local_item_path ) # git repo doesn't store directories only paths to files/symlinks, we found a dir on the fs and it's OK because the repo has a file/symlink somewhere within it
+                continue
             else:
-                if os.path.islink( full_item_path ):
-                    print "SYMLINK_SHOULD_BE_DIR:", local_item_path
-
+                print "EXTRA_DIR:", local_item_path # dir with no children in the git repo
+                err += 1
+                continue
+        
+        print "ERROR: UNPROCESSED ITEM:", local_item_path # should never get here
+        err += 1
 
 sys.exit( err )
