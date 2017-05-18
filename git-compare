@@ -83,7 +83,7 @@ def is_absent_file( item_path ):
     return is_excluded( item_path, PATTERNS_ABSENT_FILE )
 
 
-def is_absent_link( item_path, target ):
+def is_absent_link( item_path ):
     return is_excluded( item_path, PATTERNS_ABSENT_LINK )
 
 
@@ -217,7 +217,7 @@ for entry in local_repo.object_store.iter_tree_contents( tree_id ): # only retur
                 continue
             else:
                 if is_absent_link( entry.path ):
-                    debug( 0, "OK: is_absent_file():", entry.path )
+                    debug( 0, "OK: is_absent_link():", entry.path )
                     continue
                 else:
                     print "MISSING_SYMLINK:", entry.path
