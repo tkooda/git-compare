@@ -174,7 +174,11 @@ else:
 
 
 ## fetch (refresh) local repo from remote ..
-remote_refs = client.fetch( url.path, local_repo )
+try:
+	remote_refs = client.fetch( url.path, local_repo )
+except socket.error as e:
+	print >>sys.stderr, "ERROR: client.fetch(): " + e
+	sys.exit( 1 )
 debug( 9, "remote_refs:", remote_refs )
 
 
