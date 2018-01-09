@@ -18,6 +18,7 @@ from dulwich.client import SSHGitClient, HttpGitClient
 from urlparse import urlparse
 import argparse
 import re
+import socket
 
 MASK_SYMLINK = 8192
 
